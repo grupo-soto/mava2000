@@ -1,27 +1,40 @@
 // @ts-check
 // Capa de revisión para las copias de prueba de las webs (nunca va en la web real).
 // La añade herramientas/subir-mava-prueba.mjs antes de </body>:
-//   <script src="revision.js" data-web="Mava 2000" data-clave="mava2000" defer></script>
+//   <script src="revision.js" data-web="Mava 2000" data-clave="mava2000" data-api="https://…workers.dev" defer></script>
 //
-// Quien revisa va apuntando notas mientras navega (se guardan en su navegador y siguen al cambiar de página),
-// puede señalar el texto o la foto exacta, y al acabar las manda todas juntas por WhatsApp o correo, o las copia.
-// No envía nada a ningún servidor: el mensaje lo manda la persona desde su WhatsApp o su correo.
+// Pensada para que la use cualquiera, también alguien mayor, desde el móvil:
+//   1. botón grande «Corregir» (abajo a la derecha);
+//   2. «Toca lo que está mal»: la persona toca el texto, la cifra o la foto;
+//   3. escribe cómo debería ser y pulsa «Guardar corrección».
+// Cada corrección se guarda en el servidor de notas (herramientas/notas-web, Cloudflare) con la página, la sección y
+// lo que se señaló; el responsable las gestiona en su panel y las baja al repo con «npm run notas-web».
+// Si no hay conexión, se guardan en el navegador y se envían solas en cuanto se pueda.
 (() => {
   const yo = /** @type {HTMLScriptElement | null} */ (document.currentScript);
   const WEB = yo?.dataset.web || document.title.split('|').pop()?.trim() || 'la web';
-  const CLAVE = `revision:${yo?.dataset.clave || WEB}`;
+  const CLAVE = yo?.dataset.clave || 'web';
+  const API = (yo?.dataset.api || '').replace(/\/$/, '');
 
-  /** @typedef {{ donde: string, sobre: string, texto: string }} Nota */
-  /** @type {{ nombre: string, notas: Nota[], visto: boolean }} */
-  let estado = { nombre: '', notas: [], visto: false };
-  try { estado = { ...estado, ...JSON.parse(localStorage.getItem(CLAVE) || '{}') }; } catch { /* sin almacenamiento: vale igual */ }
-  const guardar = () => { try { localStorage.setItem(CLAVE, JSON.stringify(estado)); } catch { /* idem */ } };
+  // ---------- memoria del navegador (nombre, id de autor y lo que falta por enviar) ----------
+  const leer = (/** @type {string} */ k, /** @type {any} */ d) => { try { const v = localStorage.getItem(`revision:${CLAVE}:${k}`); return v ? JSON.parse(v) : d; } catch { return d; } };
+  const escribir = (/** @type {string} */ k, /** @type {any} */ v) => { try { localStorage.setItem(`revision:${CLAVE}:${k}`, JSON.stringify(v)); } catch { /* sin almacenamiento */ } };
+  let autor = leer('autor', '');
+  if (!/^[\w-]{8,64}$/.test(autor)) {
+    const b = new Uint8Array(12);
+    crypto.getRandomValues(b);
+    autor = [...b].map((x) => x.toString(36).padStart(2, '0')).join('').slice(0, 20);
+    escribir('autor', autor);
+  }
+  let nombre = leer('nombre', '');
+  /** @type {object[]} */
+  let cola = leer('cola', []);
 
   const limpio = (/** @type {string | null | undefined} */ t, max = 90) => {
     const s = (t || '').replace(/\s+/g, ' ').trim();
     return s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s;
   };
-  const esc = (/** @type {string} */ t) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] || c);
+  const esc = (/** @type {string} */ t) => String(t ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] || c);
 
   // ---------- dónde está quien revisa ----------
   const pagina = () => {
@@ -36,210 +49,29 @@
     return limpio(s.getAttribute('aria-label') || (por && document.getElementById(por)?.textContent)
       || s.querySelector('h1, h2')?.textContent || s.querySelector('.etq')?.textContent || s.id, 60).replace(/\.$/, '');
   };
-  /** La sección más interior que cruza la línea del 45 % de la pantalla. */
-  const seccion = () => {
+  /** La sección más interior que contiene el elemento o, sin él, la que cruza la línea del 45 % de la pantalla. */
+  const seccionDe = (/** @type {Element | null} */ el) => {
+    const SEL = 'main section, main header, body > section';
+    if (el) { const s = el.closest(SEL); if (s && !s.closest('.rev')) return s; }
     const y = innerHeight * 0.45;
     let mejor = /** @type {Element | null} */ (null);
-    for (const s of document.querySelectorAll('main section, main header, body > section')) {
+    for (const s of document.querySelectorAll(SEL)) {
       if (s.closest('.rev')) continue;
       const r = s.getBoundingClientRect();
       if (r.height && r.top <= y && r.bottom >= y) mejor = s;
     }
-    return mejor ? nombreDe(mejor) : '';
+    return mejor;
   };
-  const dondeAhora = () => { const p = pagina(), s = seccion(); return s && s !== p ? `${p} › ${s}` : p; };
-
-  // ---------- interfaz ----------
-  const css = `
-.rev, .rev * { box-sizing: border-box; }
-.rev { --rev-m: var(--marino, #242B46); --rev-c: var(--cobalto, #2C428E); --rev-p: var(--papel-2, #F7F6F2); --rev-t2: var(--tinta-2, #525870); --rev-l: var(--linea, rgba(36,43,70,.18));
-  font-family: inherit; color: var(--rev-m); line-height: 1.45; }
-.rev :where(button, input, textarea) { font: inherit; color: inherit; }
-.rev-tab { position: fixed; right: 0; top: 50%; z-index: 9000; display: flex; align-items: center; gap: 8px; padding: 12px 5px; border: 0; background: var(--rev-m); color: #fff; cursor: pointer;
-  writing-mode: vertical-rl; transform: translateY(-50%) rotate(180deg); font-size: 10px; font-weight: 650; font-stretch: 112%; letter-spacing: .09em; text-transform: uppercase; }
-.rev-tab:hover { background: var(--rev-c); }
-@media (min-width: 768px) { .rev-tab { padding: 16px 8px; font-size: 11px; } }
-.rev-tab b { writing-mode: horizontal-tb; transform: rotate(180deg); min-width: 18px; padding: 2px 0; background: #fff; color: var(--rev-m); font-size: 11px; font-weight: 700; letter-spacing: 0; text-align: center; }
-.rev-tab b:empty { display: none; }
-.rev--abierto .rev-tab, .rev--senalando .rev-tab { display: none; }
-.rev-aviso1 { position: fixed; right: 40px; top: 50%; z-index: 9000; transform: translateY(-50%); width: min(250px, calc(100vw - 64px)); padding: 12px 14px; background: var(--rev-p); border: 1px solid var(--rev-m); font-size: 14px; cursor: pointer; }
-.rev-aviso1::after { content: ''; position: absolute; right: -6px; top: 50%; width: 10px; height: 10px; margin-top: -5px; background: var(--rev-p); border: solid var(--rev-m); border-width: 1px 1px 0 0; transform: rotate(45deg); }
-.rev-panel { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9001; display: grid; gap: 14px; max-height: 84vh; max-height: 84dvh; overflow-y: auto; overscroll-behavior: contain;
-  padding: 18px 16px max(18px, env(safe-area-inset-bottom)); background: var(--rev-p); border-top: 1px solid var(--rev-m); box-shadow: 0 -10px 30px rgba(23, 28, 48, .16); font-size: 15px; }
-.rev-panel[hidden] { display: none; }
-@media (min-width: 768px) { .rev-panel { left: auto; right: 16px; bottom: 16px; width: 390px; max-height: calc(100dvh - 104px); border: 1px solid var(--rev-m); } }
-.rev-cab { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 4px 12px; }
-.rev-l { display: block; font-size: 11px; font-weight: 650; font-stretch: 112%; letter-spacing: .09em; text-transform: uppercase; color: var(--rev-t2); }
-.rev-tit { grid-column: 1; margin: 0; font-size: 26px; font-weight: 800; font-stretch: 80%; text-transform: uppercase; line-height: .95; }
-.rev-x { grid-row: 1 / span 2; grid-column: 2; width: 42px; height: 42px; border: 1px solid var(--rev-m); background: transparent; font-size: 22px; line-height: 1; cursor: pointer; }
-.rev-x:hover { background: var(--rev-m); color: #fff; }
-.rev-intro { margin: 0; color: var(--rev-t2); font-size: 14px; }
-.rev-caja { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--rev-m); background: #fff; }
-.rev-donde { display: grid; gap: 2px; }
-.rev-donde span:last-child { font-weight: 600; }
-.rev-sobre { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: start; padding: 8px 10px; background: var(--rev-p); border-left: 3px solid var(--rev-c); }
-.rev-sobre[hidden] { display: none; }
-.rev q { quotes: none; }
-.rev-sobre q { grid-column: 1; font-size: 14px; }
-.rev-sobre button { grid-row: 1 / span 2; grid-column: 2; border: 0; background: none; font-size: 18px; cursor: pointer; padding: 0 4px; }
-.rev-texto { width: 100%; min-height: 88px; resize: vertical; padding: 10px 12px; border: 1px solid var(--rev-l); background: #fff; font-size: 16px !important; line-height: 1.4; }
-.rev-texto:focus, .rev-nombre:focus { outline: 2px solid var(--rev-c); outline-offset: -1px; border-color: transparent; }
-.rev-fila { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.rev-b { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 46px; padding: 0 12px; border: 1px solid var(--rev-m); background: transparent; font-weight: 650; font-size: 15px; text-decoration: none; cursor: pointer; }
-.rev-b:hover { background: var(--rev-m); color: #fff; }
-.rev-b--lleno { background: var(--rev-c); border-color: var(--rev-c); color: #fff; }
-.rev-b--lleno:hover { background: var(--rev-m); border-color: var(--rev-m); }
-.rev-lista { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; counter-reset: rev; }
-.rev-lista li { counter-increment: rev; display: grid; grid-template-columns: 26px 1fr auto; gap: 2px 10px; padding: 10px 0; border-bottom: 1px solid var(--rev-l); font-size: 14px; }
-.rev-lista li::before { content: counter(rev); grid-row: 1 / span 3; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--rev-c); color: #fff; font-size: 12px; font-weight: 700; }
-.rev-lista small { grid-column: 2; color: var(--rev-t2); font-size: 12px; }
-.rev-lista q { grid-column: 2; color: var(--rev-t2); font-style: italic; }
-.rev-lista p { grid-column: 2; margin: 0; white-space: pre-wrap; }
-.rev-lista button { grid-column: 3; grid-row: 1; border: 0; background: none; color: var(--rev-t2); font-size: 18px; cursor: pointer; padding: 0 4px; }
-.rev-envio { display: grid; gap: 10px; }
-.rev-envio[hidden] { display: none; }
-.rev-nombre { width: 100%; min-height: 44px; padding: 0 12px; border: 1px solid var(--rev-l); background: #fff; font-size: 16px !important; }
-.rev-fila3 { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 6px; }
-.rev-mini { justify-self: start; border: 0; background: none; padding: 0; color: var(--rev-t2); font-size: 13px; text-decoration: underline; cursor: pointer; }
-.rev-guia { position: fixed; left: 10px; right: 10px; top: max(10px, env(safe-area-inset-top)); z-index: 9002; display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 10px 10px 10px 14px; background: var(--rev-m); color: #fff; font-size: 14px; font-weight: 600; }
-.rev-guia button { flex: none; min-height: 38px; padding: 0 12px; border: 1px solid rgba(255, 255, 255, .5); background: none; color: #fff; cursor: pointer; }
-@media (min-width: 768px) { .rev-guia { left: 50%; right: auto; width: 520px; transform: translateX(-50%); } }
-.rev-marco { position: fixed; z-index: 9001; pointer-events: none; outline: 2px solid var(--rev-c, #2C428E); outline-offset: 2px; background: rgba(44, 66, 142, .08); transition: all .12s; }
-.rev--senalando, .rev--senalando * { cursor: crosshair !important; }
-@media (prefers-reduced-motion: no-preference) { .rev-panel:not([hidden]) { animation: rev-sube .3s cubic-bezier(.2, .8, .2, 1); } }
-@keyframes rev-sube { from { transform: translateY(16px); opacity: 0; } }
-`;
-  const estilo = document.createElement('style');
-  estilo.textContent = css;
-  document.head.append(estilo);
-
-  const raiz = document.createElement('div');
-  raiz.className = 'rev';
-  raiz.innerHTML = `
-<button class="rev-tab" type="button" aria-expanded="false" aria-controls="rev-panel">Proponer cambios <b></b></button>
-<section class="rev-panel" id="rev-panel" role="dialog" aria-labelledby="rev-tit" data-lenis-prevent hidden>
-  <div class="rev-cab">
-    <span class="rev-l">Versión de prueba · revisión</span>
-    <h2 class="rev-tit" id="rev-tit">¿Qué cambiarías?</h2>
-    <button class="rev-x" type="button" aria-label="Cerrar">×</button>
-  </div>
-  <p class="rev-intro">Esta es la web nueva de ${esc(WEB)} antes de publicarla. Apunta lo que esté mal o falte (cifras, nombres, años, textos, fotos) y, cuando acabes, mándalo todo junto.</p>
-  <div class="rev-caja">
-    <div class="rev-donde"><span class="rev-l">Dónde</span><span data-donde></span></div>
-    <div class="rev-sobre" data-sobre-caja hidden><span class="rev-l">Sobre</span><q data-sobre></q><button type="button" data-sobre-quitar aria-label="Quitar">×</button></div>
-    <label class="rev-l" for="rev-texto">Qué hay que cambiar</label>
-    <textarea class="rev-texto" id="rev-texto" data-texto rows="3" placeholder="Ej.: este año no es 2019, la obra se acabó en 2021."></textarea>
-    <div class="rev-fila">
-      <button class="rev-b" type="button" data-senalar>Señalar en la web</button>
-      <button class="rev-b rev-b--lleno" type="button" data-anadir>Añadir nota</button>
-    </div>
-  </div>
-  <ol class="rev-lista" data-lista></ol>
-  <div class="rev-envio" data-envio hidden>
-    <span class="rev-l">Cuando acabes, envía las notas</span>
-    <input class="rev-nombre" data-nombre type="text" placeholder="Tu nombre" autocomplete="name">
-    <div class="rev-fila3">
-      <a class="rev-b rev-b--lleno" data-wa target="_blank" rel="noopener">WhatsApp</a>
-      <a class="rev-b" data-correo>Correo</a>
-      <button class="rev-b" type="button" data-copiar>Copiar</button>
-    </div>
-    <button class="rev-mini" type="button" data-vaciar>Borrar todas las notas</button>
-  </div>
-</section>`;
-  document.body.append(raiz);
-
-  const $ = (/** @type {string} */ s) => /** @type {HTMLElement} */ (raiz.querySelector(s));
-  const tab = $('.rev-tab'), panel = $('.rev-panel'), lista = $('[data-lista]'), envio = $('[data-envio]');
-  const texto = /** @type {HTMLTextAreaElement} */ ($('[data-texto]'));
-  const nombre = /** @type {HTMLInputElement} */ ($('[data-nombre]'));
-  const wa = /** @type {HTMLAnchorElement} */ ($('[data-wa]')), correo = /** @type {HTMLAnchorElement} */ ($('[data-correo]'));
-  const copiar = $('[data-copiar]');
-  let donde = '', sobre = '';
-
-  const mensaje = () => {
-    const l = [`Cambios para la web nueva de ${WEB}`];
-    if (estado.nombre) l.push(`De: ${estado.nombre}`);
-    l.push(location.href.replace(/[#?].*$/, '').replace(/[^/]*$/, ''), '');
-    estado.notas.forEach((n, i) => {
-      l.push(`${i + 1}. ${n.donde}`);
-      if (n.sobre) l.push(`   Sobre: ${n.sobre}`);
-      l.push(`   ${n.texto.replace(/\n/g, '\n   ')}`, '');
-    });
-    return l.join('\n').trim();
+  /** @param {Element | null} el */
+  const lugar = (el) => {
+    const s = seccionDe(el);
+    const archivo = location.pathname.split('/').pop() || 'index.html';
+    const conId = s && (s.id ? s : s.closest('[id]'));
+    return { pagina: pagina(), seccion: s ? nombreDe(s) : '', url: `${archivo}${conId?.id ? `#${conId.id}` : ''}` };
   };
 
-  const pintar = () => {
-    const n = estado.notas.length;
-    tab.querySelector('b').textContent = n ? String(n) : '';
-    $('[data-donde]').textContent = donde;
-    $('[data-sobre]').textContent = sobre;
-    $('[data-sobre-caja]').hidden = !sobre;
-    lista.innerHTML = estado.notas.map((x, i) => `<li><small>${esc(x.donde)}</small>${x.sobre ? `<q>${esc(x.sobre)}</q>` : ''}<p>${esc(x.texto)}</p><button type="button" data-borrar="${i}" aria-label="Borrar la nota ${i + 1}">×</button></li>`).join('');
-    envio.hidden = !n;
-    nombre.value = estado.nombre;
-    const m = mensaje();
-    wa.href = `https://wa.me/?text=${encodeURIComponent(m)}`;
-    correo.href = `mailto:?subject=${encodeURIComponent(`Cambios para la web nueva de ${WEB}`)}&body=${encodeURIComponent(m)}`;
-  };
-
-  const abrir = (/** @type {boolean} */ si, mantener = false) => {
-    if (si && !mantener) { donde = dondeAhora(); sobre = ''; }
-    panel.hidden = !si;
-    raiz.classList.toggle('rev--abierto', si);
-    tab.setAttribute('aria-expanded', String(si));
-    if (si) { pintar(); texto.focus({ preventScroll: true }); }
-    aviso1?.remove();
-  };
-
-  tab.addEventListener('click', () => abrir(true));
-  $('.rev-x').addEventListener('click', () => abrir(false));
-  addEventListener('keydown', (e) => { if (e.key === 'Escape' && !panel.hidden) abrir(false); });
-  $('[data-sobre-quitar]').addEventListener('click', () => { sobre = ''; pintar(); });
-  $('[data-anadir]').addEventListener('click', () => {
-    const t = texto.value.trim();
-    if (!t) { texto.focus(); return; }
-    estado.notas.push({ donde, sobre, texto: t });
-    guardar();
-    texto.value = ''; sobre = '';
-    pintar();
-    lista.lastElementChild?.scrollIntoView({ block: 'nearest' });
-  });
-  lista.addEventListener('click', (e) => {
-    const b = /** @type {HTMLElement} */ (e.target).closest('[data-borrar]');
-    if (!b) return;
-    estado.notas.splice(Number(b.getAttribute('data-borrar')), 1);
-    guardar(); pintar();
-  });
-  nombre.addEventListener('input', () => { estado.nombre = nombre.value.trim(); guardar(); pintar(); });
-  copiar.addEventListener('click', async () => {
-    const m = mensaje();
-    let ok = false;
-    try { await navigator.clipboard.writeText(m); ok = true; } catch {
-      const t = document.createElement('textarea');
-      t.value = m; t.style.cssText = 'position:fixed;opacity:0';
-      raiz.append(t); t.select();
-      try { ok = document.execCommand('copy'); } catch { /* nada */ }
-      t.remove();
-    }
-    copiar.textContent = ok ? 'Copiado' : 'No se pudo';
-    setTimeout(() => { copiar.textContent = 'Copiar'; }, 2200);
-  });
-  $('[data-vaciar]').addEventListener('click', () => {
-    if (!confirm('¿Borrar todas las notas? Hazlo solo si ya las has enviado.')) return;
-    estado.notas = []; guardar(); pintar();
-  });
-
-  // ---------- señalar un texto o una foto de la página ----------
-  const marco = document.createElement('div');
-  marco.className = 'rev-marco';
-  marco.hidden = true;
-  const guia = document.createElement('div');
-  guia.className = 'rev-guia';
-  guia.innerHTML = '<span>Toca el texto o la foto que quieres cambiar</span><button type="button">Cancelar</button>';
+  // ---------- qué se ha señalado ----------
   const BLOQUE = 'p, h1, h2, h3, h4, li, dt, dd, th, td, figcaption, blockquote, label, a, button, text';
-
-  /** Qué hay bajo el dedo: el texto del bloque, o la foto. */
   const cita = (/** @type {Element} */ el) => {
     const foto = (/** @type {HTMLImageElement} */ i) => `Foto${i.alt ? `: ${limpio(i.alt, 80)}` : ` (${(i.currentSrc || i.src).split('/').pop()})`}`;
     const b = el.closest(BLOQUE);
@@ -255,31 +87,209 @@
     // un contenedor grande no dice nada concreto: solo se cita si es pequeño
     return el.children.length <= 2 && limpio(el.textContent, 100) ? `«${limpio(el.textContent, 100)}»` : '';
   };
-  /** @param {Event} e */
-  const debajo = (e) => {
-    const t = /** @type {Element | null} */ (e.target);
-    return t && !t.closest('.rev-guia') ? t : null;
+  const recuadroDe = (/** @type {Element} */ t) => (t.closest('img') || t.closest(BLOQUE) || t).getBoundingClientRect();
+
+  // ---------- servidor ----------
+  const enviar = async (/** @type {object} */ nota) => {
+    if (!API) throw new Error('sin servidor');
+    const r = await fetch(`${API}/api/notas`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(nota) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) { const e = new Error(j.error || 'No se ha podido guardar'); /** @type {any} */ (e).definitivo = r.status >= 400 && r.status < 500 && r.status !== 429; throw e; }
+    return j.nota;
   };
-  /** @param {PointerEvent} e */
-  const mover = (e) => {
+  const vaciarCola = async () => {
+    if (!cola.length || !API) return;
+    const quedan = [];
+    for (const n of cola) { try { await enviar(n); } catch (e) { if (!/** @type {any} */ (e).definitivo) quedan.push(n); } }
+    cola = quedan;
+    escribir('cola', cola);
+  };
+  const misNotas = async () => {
+    if (!API) return [];
+    const r = await fetch(`${API}/api/notas?web=${encodeURIComponent(CLAVE)}&autor=${encodeURIComponent(autor)}`);
+    const j = await r.json().catch(() => ({}));
+    return j.ok ? j.notas : [];
+  };
+  const borrarMia = async (/** @type {number} */ id) => {
+    const r = await fetch(`${API}/api/notas/${id}?autor=${encodeURIComponent(autor)}`, { method: 'DELETE' });
+    const j = await r.json().catch(() => ({}));
+    if (!j.ok) throw new Error(j.error || 'No se ha podido borrar');
+  };
+
+  // ---------- interfaz ----------
+  const css = `
+.rev, .rev * { box-sizing: border-box; }
+.rev { --rev-m: var(--marino, #242B46); --rev-c: var(--cobalto, #2C428E); --rev-p: var(--papel-2, #F7F6F2); --rev-t2: var(--tinta-2, #525870); --rev-l: rgba(36, 43, 70, .22); --rev-ok: #2E6B3F;
+  font-family: inherit; color: var(--rev-m); line-height: 1.45; -webkit-text-size-adjust: 100%; }
+.rev :where(button, input, textarea) { font: inherit; color: inherit; }
+.rev [hidden] { display: none !important; }
+.rev-ico { width: 22px; height: 22px; flex: none; }
+.rev-fab { position: fixed; right: 10px; bottom: calc(max(10px, env(safe-area-inset-bottom)) + 60px); z-index: 9000; display: inline-flex; align-items: center; gap: 10px;
+  min-height: 54px; padding: 0 20px 0 16px; border: 2px solid #fff; background: var(--rev-m); color: #fff; font-size: 17px; font-weight: 700; cursor: pointer;
+  box-shadow: 0 6px 18px rgba(23, 28, 48, .28); }
+.rev-fab:hover, .rev-fab:focus-visible { background: var(--rev-c); }
+@media (min-width: 1024px) { .rev-fab { right: 24px; bottom: 24px; } }
+.rev--abierto .rev-fab, .rev--senalando .rev-fab { display: none; }
+.rev-pista { position: fixed; right: 10px; bottom: calc(max(10px, env(safe-area-inset-bottom)) + 124px); z-index: 9000; width: min(300px, calc(100vw - 20px)); padding: 14px 16px;
+  background: #fff; border: 2px solid var(--rev-m); font-size: 16px; cursor: pointer; box-shadow: 0 6px 18px rgba(23, 28, 48, .18); }
+.rev-pista b { display: block; font-size: 17px; margin-bottom: 2px; }
+.rev-pista::after { content: ''; position: absolute; right: 40px; bottom: -9px; width: 14px; height: 14px; background: #fff; border: solid var(--rev-m); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+@media (min-width: 1024px) { .rev-pista { right: 24px; bottom: 92px; } }
+.rev-hoja { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9001; max-height: 88vh; max-height: 88dvh; overflow-y: auto; overscroll-behavior: contain;
+  padding: 20px 18px max(20px, env(safe-area-inset-bottom)); background: var(--rev-p); border-top: 2px solid var(--rev-m); box-shadow: 0 -10px 30px rgba(23, 28, 48, .2); font-size: 17px; }
+.rev-hoja[hidden] { display: none; }
+@media (min-width: 768px) { .rev-hoja { left: auto; right: 24px; bottom: 24px; width: 440px; max-height: calc(100dvh - 110px); border: 2px solid var(--rev-m); } }
+.rev-cab { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.rev-tit { margin: 0; font-size: 28px; font-weight: 800; font-stretch: 85%; line-height: 1.05; }
+.rev-x { flex: none; display: grid; place-items: center; width: 50px; height: 50px; border: 2px solid var(--rev-m); background: #fff; cursor: pointer; }
+.rev-x:hover { background: var(--rev-m); color: #fff; }
+.rev-cuerpo { display: grid; gap: 16px; }
+.rev-donde { margin: 0; font-size: 15px; color: var(--rev-t2); }
+.rev-donde b { color: var(--rev-m); font-weight: 650; }
+.rev-senal { display: grid; gap: 6px; padding: 12px 14px; background: #fff; border: 2px solid var(--rev-c); }
+.rev-senal[hidden] { display: none; }
+.rev-senal span { font-size: 14px; font-weight: 700; color: var(--rev-c); text-transform: uppercase; letter-spacing: .06em; }
+.rev-senal q { quotes: none; font-size: 17px; font-weight: 600; }
+.rev-campo { display: grid; gap: 6px; }
+.rev-campo[hidden] { display: none; }
+.rev-campo label { font-size: 18px; font-weight: 700; }
+.rev-campo small { font-size: 15px; color: var(--rev-t2); }
+.rev-texto, .rev-nombre { width: 100%; padding: 12px 14px; border: 2px solid var(--rev-l); background: #fff; font-size: 18px !important; line-height: 1.4; }
+.rev-texto { min-height: 130px; resize: vertical; }
+.rev-nombre { min-height: 54px; }
+.rev-texto:focus, .rev-nombre:focus { outline: 3px solid var(--rev-c); outline-offset: 0; border-color: var(--rev-c); }
+.rev-b { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 58px; padding: 0 16px; border: 2px solid var(--rev-m); background: #fff;
+  font-size: 18px; font-weight: 700; text-align: center; cursor: pointer; }
+.rev-b:hover { background: var(--rev-m); color: #fff; }
+.rev-b--lleno { background: var(--rev-c); border-color: var(--rev-c); color: #fff; }
+.rev-b--lleno:hover { background: var(--rev-m); border-color: var(--rev-m); }
+.rev-b[disabled] { opacity: .6; cursor: wait; }
+.rev-enlace { justify-self: start; border: 0; background: none; padding: 6px 0; font-size: 16px; font-weight: 600; color: var(--rev-c); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.rev-error { margin: 0; padding: 10px 12px; background: #FBEAEA; border-left: 4px solid #B3261E; font-size: 16px; }
+.rev-error[hidden] { display: none; }
+.rev-hecho { display: grid; gap: 16px; text-align: center; padding: 8px 0 4px; }
+.rev-hecho svg { justify-self: center; width: 64px; height: 64px; color: var(--rev-ok); }
+.rev-hecho h3 { margin: 0; font-size: 26px; font-weight: 800; }
+.rev-hecho p { margin: 0; color: var(--rev-t2); }
+.rev-lista { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.rev-lista li { display: grid; gap: 4px; padding: 14px 0; border-bottom: 1px solid var(--rev-l); font-size: 16px; }
+.rev-lista small { font-size: 14px; color: var(--rev-t2); }
+.rev-lista q { quotes: none; font-style: italic; color: var(--rev-t2); }
+.rev-lista p { margin: 0; white-space: pre-wrap; }
+.rev-estado { justify-self: start; padding: 2px 10px; font-size: 14px; font-weight: 700; border: 1.5px solid currentColor; }
+.rev-estado--hecha { color: var(--rev-ok); }
+.rev-estado--descartada { color: var(--rev-t2); }
+.rev-estado--pendiente { color: var(--rev-c); }
+.rev-resp { padding: 8px 10px; background: #fff; border-left: 3px solid var(--rev-ok); font-size: 15px; }
+.rev-guia { position: fixed; left: 10px; right: 10px; top: max(10px, env(safe-area-inset-top)); z-index: 9002; display: grid; gap: 12px; padding: 16px; background: var(--rev-m); color: #fff;
+  box-shadow: 0 8px 24px rgba(23, 28, 48, .3); }
+.rev-guia p { margin: 0; font-size: 19px; font-weight: 700; line-height: 1.3; }
+.rev-guia small { display: block; margin-top: 4px; font-size: 15px; font-weight: 450; opacity: .85; }
+.rev-guia div { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.rev-guia button { min-height: 50px; padding: 0 10px; border: 2px solid rgba(255, 255, 255, .7); background: none; color: #fff; font-size: 16px; font-weight: 650; cursor: pointer; }
+.rev-guia button:hover { background: #fff; color: var(--rev-m); }
+@media (min-width: 768px) { .rev-guia { left: 50%; right: auto; width: 560px; transform: translateX(-50%); } }
+.rev-marco { position: fixed; z-index: 9001; pointer-events: none; outline: 3px solid var(--rev-c); outline-offset: 3px; background: rgba(44, 66, 142, .1); }
+.rev-marco[hidden] { display: none; }
+.rev--senalando, .rev--senalando * { cursor: pointer !important; }
+@media (prefers-reduced-motion: no-preference) { .rev-hoja:not([hidden]) { animation: rev-sube .28s cubic-bezier(.2, .8, .2, 1); } }
+@keyframes rev-sube { from { transform: translateY(16px); opacity: 0; } }
+`;
+  const estilo = document.createElement('style');
+  estilo.textContent = css;
+  document.head.append(estilo);
+
+  const LAPIZ = '<svg class="rev-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4Z M13.5 6.5l4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
+  const CRUZ = '<svg class="rev-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+  const raiz = document.createElement('div');
+  raiz.className = 'rev';
+  raiz.innerHTML = `
+<button class="rev-fab" type="button" aria-haspopup="dialog">${LAPIZ}Corregir</button>
+<section class="rev-hoja" role="dialog" aria-labelledby="rev-tit" data-lenis-prevent hidden>
+  <div class="rev-cab"><h2 class="rev-tit" id="rev-tit">Corregir la web</h2><button class="rev-x" type="button" aria-label="Cerrar">${CRUZ}</button></div>
+  <div class="rev-cuerpo" data-paso="escribir">
+    <p class="rev-donde">Estás en <b data-donde></b></p>
+    <div class="rev-senal" data-senal hidden><span>Lo que has tocado</span><q data-cita></q></div>
+    <div class="rev-campo" data-campo-nombre>
+      <label for="rev-nombre">Tu nombre</label>
+      <input class="rev-nombre" id="rev-nombre" data-nombre type="text" autocomplete="name" placeholder="Por ejemplo: Ana">
+    </div>
+    <div class="rev-campo">
+      <label for="rev-texto">¿Qué está mal y cómo debería ser?</label>
+      <textarea class="rev-texto" id="rev-texto" data-texto rows="4" placeholder="Por ejemplo: no son 47 personas, somos 52."></textarea>
+    </div>
+    <p class="rev-error" data-error role="alert" hidden></p>
+    <button class="rev-b rev-b--lleno" type="button" data-guardar>Guardar corrección</button>
+    <button class="rev-b" type="button" data-otra-vez>Tocar otra cosa de la página</button>
+    <button class="rev-enlace" type="button" data-ver-mias>Ver mis correcciones</button>
+  </div>
+  <div class="rev-cuerpo" data-paso="hecho" hidden>
+    <div class="rev-hecho">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m7 12.5 3.2 3.2L17 9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <h3>Guardada. ¡Gracias!</h3>
+      <p data-hecho-texto>Queda apuntada para corregirla.</p>
+    </div>
+    <button class="rev-b rev-b--lleno" type="button" data-otra>Corregir otra cosa</button>
+    <button class="rev-b" type="button" data-cerrar>Seguir mirando la web</button>
+  </div>
+  <div class="rev-cuerpo" data-paso="mias" hidden>
+    <p class="rev-donde" data-mias-resumen></p>
+    <ol class="rev-lista" data-lista></ol>
+    <button class="rev-b" type="button" data-volver>Volver</button>
+  </div>
+</section>`;
+  document.body.append(raiz);
+
+  const $ = (/** @type {string} */ s) => /** @type {HTMLElement} */ (raiz.querySelector(s));
+  const fab = $('.rev-fab'), hoja = $('.rev-hoja');
+  const texto = /** @type {HTMLTextAreaElement} */ ($('[data-texto]'));
+  const campoNombre = $('[data-campo-nombre]'), inNombre = /** @type {HTMLInputElement} */ ($('[data-nombre]'));
+  const error = $('[data-error]'), guardar = /** @type {HTMLButtonElement} */ ($('[data-guardar]'));
+  /** @type {{ pagina: string, seccion: string, url: string }} */
+  let donde = lugar(null);
+  let sobre = '';
+
+  const paso = (/** @type {string} */ p) => raiz.querySelectorAll('[data-paso]').forEach((d) => { /** @type {HTMLElement} */ (d).hidden = d.getAttribute('data-paso') !== p; });
+  const pintar = () => {
+    $('[data-donde]').textContent = donde.seccion ? `${donde.pagina} › ${donde.seccion}` : donde.pagina;
+    $('[data-cita]').textContent = sobre;
+    $('[data-senal]').hidden = !sobre;
+    campoNombre.hidden = !!nombre;
+    inNombre.value = nombre;
+    error.hidden = true;
+  };
+  const abrir = (/** @type {boolean} */ si) => {
+    hoja.hidden = !si;
+    raiz.classList.toggle('rev--abierto', si);
+    pista?.remove();
+    if (si) { pintar(); paso('escribir'); setTimeout(() => (nombre ? texto : inNombre).focus({ preventScroll: true }), 50); }
+  };
+
+  // ---------- señalar: lo primero al pulsar «Corregir» ----------
+  const marco = document.createElement('div');
+  marco.className = 'rev-marco';
+  marco.hidden = true;
+  const guia = document.createElement('div');
+  guia.className = 'rev-guia';
+  guia.innerHTML = '<p>Toca lo que está mal<small>Un texto, una cifra, un nombre o una foto.</small></p><div><button type="button" data-solo>Escribir sin tocar</button><button type="button" data-cancelar>Cancelar</button></div>';
+  const debajo = (/** @type {Event} */ e) => { const t = /** @type {Element | null} */ (e.target); return t && !t.closest('.rev-guia') ? t : null; };
+  const mover = (/** @type {PointerEvent} */ e) => {
     const t = debajo(e);
-    if (!t) { marco.hidden = true; return; }
-    const r = (t.closest('img') || t.closest(BLOQUE) || t).getBoundingClientRect();
+    if (!t || e.pointerType === 'touch') { marco.hidden = true; return; }
+    const r = recuadroDe(t);
     Object.assign(marco.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
     marco.hidden = false;
   };
-  /** @param {Event} e */
-  const elegir = (e) => {
+  const tragar = (/** @type {Event} */ e) => { if (debajo(e)) { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); } };
+  const elegir = (/** @type {Event} */ e) => {
     const t = debajo(e);
     if (!t) return;
-    e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
-    if (e.type !== 'click') return;
+    tragar(e);
     salir();
     sobre = cita(t);
-    donde = dondeAhora();
-    abrir(true, true);
+    donde = lugar(t);
+    abrir(true);
   };
-  const tragar = (/** @type {Event} */ e) => { if (debajo(e)) { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); } };
   const salir = () => {
     raiz.classList.remove('rev--senalando');
     document.documentElement.classList.remove('rev--senalando');
@@ -289,8 +299,7 @@
     removeEventListener('pointerdown', tragar, true);
     removeEventListener('mousedown', tragar, true);
   };
-  guia.querySelector('button')?.addEventListener('click', () => { salir(); abrir(true, true); });
-  $('[data-senalar]').addEventListener('click', () => {
+  const senalar = () => {
     abrir(false);
     raiz.classList.add('rev--senalando');
     document.documentElement.classList.add('rev--senalando');
@@ -299,23 +308,84 @@
     addEventListener('click', elegir, true);
     addEventListener('pointerdown', tragar, true);
     addEventListener('mousedown', tragar, true);
+  };
+  guia.querySelector('[data-cancelar]')?.addEventListener('click', salir);
+  guia.querySelector('[data-solo]')?.addEventListener('click', () => { salir(); sobre = ''; donde = lugar(null); abrir(true); });
+
+  // ---------- guardar ----------
+  guardar.addEventListener('click', async () => {
+    const t = texto.value.trim();
+    if (!nombre) {
+      const n = inNombre.value.trim();
+      if (!n) { error.textContent = 'Escribe tu nombre, así sabremos de quién es la corrección.'; error.hidden = false; inNombre.focus(); return; }
+      nombre = n.slice(0, 80); escribir('nombre', nombre);
+    }
+    if (!t) { error.textContent = 'Escribe qué hay que cambiar.'; error.hidden = false; texto.focus(); return; }
+    const nota = { web: CLAVE, ...donde, sobre, texto: t, nombre, autor };
+    guardar.disabled = true; guardar.textContent = 'Guardando…'; error.hidden = true;
+    let msg = 'Queda apuntada para corregirla.';
+    try { await enviar(nota); } catch (e) {
+      if (/** @type {any} */ (e).definitivo) { error.textContent = /** @type {Error} */ (e).message; error.hidden = false; guardar.disabled = false; guardar.textContent = 'Guardar corrección'; return; }
+      cola.push(nota); escribir('cola', cola);
+      msg = 'Ahora mismo no hay conexión: está guardada en este móvil y se enviará sola la próxima vez que abras la web.';
+    }
+    guardar.disabled = false; guardar.textContent = 'Guardar corrección';
+    texto.value = ''; sobre = '';
+    $('[data-hecho-texto]').textContent = msg;
+    paso('hecho');
+    vaciarCola();
+  });
+  $('[data-otra]').addEventListener('click', senalar);
+  $('[data-otra-vez]').addEventListener('click', senalar);
+  $('[data-cerrar]').addEventListener('click', () => abrir(false));
+  $('.rev-x').addEventListener('click', () => { abrir(false); });
+  addEventListener('keydown', (e) => { if (e.key !== 'Escape') return; if (raiz.classList.contains('rev--senalando')) salir(); else if (!hoja.hidden) abrir(false); });
+  fab.addEventListener('click', senalar);
+
+  // ---------- mis correcciones ----------
+  const ESTADOS = { pendiente: 'Pendiente', hecha: 'Corregida', descartada: 'No se cambia' };
+  const lista = $('[data-lista]');
+  const verMias = async () => {
+    paso('mias');
+    const resumen = $('[data-mias-resumen]');
+    resumen.textContent = 'Cargando…';
+    lista.innerHTML = '';
+    let notas = [];
+    try { notas = await misNotas(); } catch { resumen.textContent = 'No se han podido cargar ahora. Prueba dentro de un rato.'; return; }
+    const sinEnviar = cola.length ? ` ${cola.length} esperando conexión.` : '';
+    resumen.textContent = notas.length ? `Has guardado ${notas.length} ${notas.length === 1 ? 'corrección' : 'correcciones'}.${sinEnviar}` : `Todavía no has guardado ninguna.${sinEnviar}`;
+    lista.innerHTML = notas.map((n) => `<li>
+      <span class="rev-estado rev-estado--${esc(n.estado)}">${esc(ESTADOS[/** @type {keyof typeof ESTADOS} */ (n.estado)] || n.estado)}</span>
+      <small>${esc(n.pagina)}${n.seccion ? ` › ${esc(n.seccion)}` : ''}</small>
+      ${n.sobre ? `<q>${esc(n.sobre)}</q>` : ''}
+      <p>${esc(n.texto)}</p>
+      ${n.respuesta ? `<div class="rev-resp">${esc(n.respuesta)}</div>` : ''}
+      ${n.estado === 'pendiente' ? `<button class="rev-enlace" type="button" data-borrar="${Number(n.id)}">Borrar esta corrección</button>` : ''}
+    </li>`).join('');
+  };
+  $('[data-ver-mias]').addEventListener('click', verMias);
+  $('[data-volver]').addEventListener('click', () => { pintar(); paso('escribir'); });
+  lista.addEventListener('click', async (e) => {
+    const b = /** @type {HTMLElement} */ (e.target).closest('[data-borrar]');
+    if (!b || !confirm('¿Borrar esta corrección?')) return;
+    try { await borrarMia(Number(b.getAttribute('data-borrar'))); verMias(); } catch (err) { alert(/** @type {Error} */ (err).message); }
   });
 
-  // ---------- primera visita: una pista al lado del botón ----------
+  // ---------- primera visita: una pista encima del botón ----------
   /** @type {HTMLElement | null} */
-  let aviso1 = null;
-  if (!estado.visto) {
+  let pista = null;
+  if (!leer('visto', false)) {
     setTimeout(() => {
-      if (!panel.hidden) return;
-      aviso1 = document.createElement('div');
-      aviso1.className = 'rev-aviso1';
-      aviso1.innerHTML = '<span class="rev-l">Versión de prueba</span>Si ves algo que cambiar, pulsa «Proponer cambios» y apúntalo.';
-      aviso1.addEventListener('click', () => abrir(true));
-      raiz.append(aviso1);
-      estado.visto = true; guardar();
-      setTimeout(() => aviso1?.remove(), 9000);
+      if (!hoja.hidden || raiz.classList.contains('rev--senalando')) return;
+      pista = document.createElement('div');
+      pista.className = 'rev-pista';
+      pista.innerHTML = `<b>Esta web es una prueba</b>Si ves algo que no está bien, pulsa «Corregir» y tócalo.`;
+      pista.addEventListener('click', () => { pista?.remove(); senalar(); });
+      raiz.append(pista);
+      escribir('visto', true);
+      setTimeout(() => pista?.remove(), 12000);
     }, 2500);
   }
 
-  pintar();
+  vaciarCola();
 })();
