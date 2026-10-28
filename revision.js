@@ -34,7 +34,7 @@
   const nombreDe = (/** @type {Element} */ s) => {
     const por = s.getAttribute('aria-labelledby');
     return limpio(s.getAttribute('aria-label') || (por && document.getElementById(por)?.textContent)
-      || s.querySelector('h1, h2')?.textContent || s.querySelector('.etq')?.textContent || s.id, 60);
+      || s.querySelector('h1, h2')?.textContent || s.querySelector('.etq')?.textContent || s.id, 60).replace(/\.$/, '');
   };
   /** La sección más interior que cruza la línea del 45 % de la pantalla. */
   const seccion = () => {
@@ -54,10 +54,11 @@
 .rev, .rev * { box-sizing: border-box; }
 .rev { --rev-m: var(--marino, #242B46); --rev-c: var(--cobalto, #2C428E); --rev-p: var(--papel-2, #F7F6F2); --rev-t2: var(--tinta-2, #525870); --rev-l: var(--linea, rgba(36,43,70,.18));
   font-family: inherit; color: var(--rev-m); line-height: 1.45; }
-.rev button, .rev input, .rev textarea { font: inherit; color: inherit; }
-.rev-tab { position: fixed; right: 0; top: 50%; z-index: 9000; display: flex; align-items: center; gap: 10px; padding: 14px 8px; border: 0; background: var(--rev-m); color: #fff; cursor: pointer;
-  writing-mode: vertical-rl; transform: translateY(-50%) rotate(180deg); font-size: 11px; font-weight: 650; font-stretch: 112%; letter-spacing: .09em; text-transform: uppercase; }
+.rev :where(button, input, textarea) { font: inherit; color: inherit; }
+.rev-tab { position: fixed; right: 0; top: 50%; z-index: 9000; display: flex; align-items: center; gap: 8px; padding: 12px 5px; border: 0; background: var(--rev-m); color: #fff; cursor: pointer;
+  writing-mode: vertical-rl; transform: translateY(-50%) rotate(180deg); font-size: 10px; font-weight: 650; font-stretch: 112%; letter-spacing: .09em; text-transform: uppercase; }
 .rev-tab:hover { background: var(--rev-c); }
+@media (min-width: 768px) { .rev-tab { padding: 16px 8px; font-size: 11px; } }
 .rev-tab b { writing-mode: horizontal-tb; transform: rotate(180deg); min-width: 18px; padding: 2px 0; background: #fff; color: var(--rev-m); font-size: 11px; font-weight: 700; letter-spacing: 0; text-align: center; }
 .rev-tab b:empty { display: none; }
 .rev--abierto .rev-tab, .rev--senalando .rev-tab { display: none; }
@@ -77,6 +78,8 @@
 .rev-donde { display: grid; gap: 2px; }
 .rev-donde span:last-child { font-weight: 600; }
 .rev-sobre { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: start; padding: 8px 10px; background: var(--rev-p); border-left: 3px solid var(--rev-c); }
+.rev-sobre[hidden] { display: none; }
+.rev q { quotes: none; }
 .rev-sobre q { grid-column: 1; font-size: 14px; }
 .rev-sobre button { grid-row: 1 / span 2; grid-column: 2; border: 0; background: none; font-size: 18px; cursor: pointer; padding: 0 4px; }
 .rev-texto { width: 100%; min-height: 88px; resize: vertical; padding: 10px 12px; border: 1px solid var(--rev-l); background: #fff; font-size: 16px !important; line-height: 1.4; }
@@ -240,7 +243,8 @@
   const cita = (/** @type {Element} */ el) => {
     const foto = (/** @type {HTMLImageElement} */ i) => `Foto${i.alt ? `: ${limpio(i.alt, 80)}` : ` (${(i.currentSrc || i.src).split('/').pop()})`}`;
     const b = el.closest(BLOQUE);
-    const t = limpio(b?.textContent || '', 100);
+    // innerText respeta los saltos de línea de lo que se ve (textContent pegaría «2024Estado»)
+    const t = limpio(b ? (b instanceof HTMLElement ? b.innerText.replace(/\s*\n+\s*/g, ' · ') : b.textContent) : '', 100);
     const img = /** @type {HTMLImageElement | null} */ (el.closest('img'));
     if (img) return `${foto(img)}${t ? ` (en «${limpio(t, 60)}»)` : ''}`;
     if (t) return `«${t}»`;
