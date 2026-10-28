@@ -1,0 +1,28 @@
+/* Generado desde marca/colores.json con «npm run marca». No editar aquí: cambia el JSON. */
+:root {
+  /* Grupo Soto */
+  --gs-pizarra: #172124;
+  --gs-piedra: #BFB9B4;
+  --gs-fondo: #F5F4F1;
+  --gs-accion: #D2501A;
+  /* Empresas */
+  --co-mava2000: #6E72E8; /* Mava 2000 */
+  --co-mava2000-tinta: #242B46;
+  --co-mava2000-accion: #2C428E;
+  --co-soto-ecotrans: #A2CD3F; /* Soto-Ecotrans */
+  --co-soto-ecotrans-tinta: #404041;
+  --co-soto-ecotrans-accion: #557A17;
+  --co-reciclados-soto: #82AC3D; /* Reciclados Soto */
+  --co-reciclados-soto-tinta: #3F3E3E;
+  --co-reciclados-soto-accion: #4F7623;
+  --co-stam: #3F6FE0; /* Stam */
+  --co-zentromachine: #F14704; /* Zentromachine */
+  --co-zentromachine-tinta: #1C1E21;
+  --co-zentromachine-accion: #C93A03;
+  --co-orbita: #1E9E94; /* Órbita */
+  --co-reverso: #B0D07A; /* Reverso */
+  --co-reverso-tinta: #222F1E;
+  --co-reverso-accion: #47782C;
+  --co-guica: #1D93D1; /* Guica */
+  --co-evorabeja: #B8924F; /* Évora Beja */
+}
